@@ -1,4 +1,4 @@
-package com.cellclaw.memory
+ckage com.cellclaw.memory
 
 import androidx.room.*
 import com.cellclaw.scheduler.ScheduledTaskDao
@@ -68,5 +68,4 @@ interface MemoryFactDao {
     suspend fun search(query: String): List<MemoryFactEntity>
 
     @Query("DELETE FROM memory_facts WHERE id = :id")
-    suspend fun delete(id: Long)
-}
+    suspend fun delete(id: Long
