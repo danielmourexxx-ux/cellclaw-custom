@@ -64,9 +64,8 @@ class ChatViewModel @Inject constructor(
         observeAgentState()
         observeVoiceInput()
 
-        agentLoop.loadHistory()
-
         viewModelScope.launch {
+            agentLoop.loadHistory()
             refreshMessages()
             refreshConversations()
         }
