@@ -1,3 +1,4 @@
+
 package com.cellclaw.memory
 
 import androidx.room.*
@@ -37,11 +38,15 @@ data class MemoryFactEntity(
 
 @Dao
 interface MessageDao {
+
     @Insert
     suspend fun insert(message: MessageEntity): Long
 
     @Query("SELECT * FROM messages WHERE conversation_id = :conversationId ORDER BY timestamp DESC LIMIT :limit")
-    suspend fun getRecent(conversationId: String = "default", limit: Int = 50): List<MessageEntity>
+    suspend fun getRecent(
+        conversationId: String = "default",
+        limit: Int = 50
+    ): List<MessageEntity>
 
     @Query("SELECT * FROM messages WHERE conversation_id = :conversationId ORDER BY timestamp ASC")
     suspend fun getAll(conversationId: String = "default"): List<MessageEntity>
@@ -51,10 +56,41 @@ interface MessageDao {
 
     @Query("SELECT COUNT(*) FROM messages WHERE conversation_id = :conversationId")
     suspend fun count(conversationId: String = "default"): Int
+
+    @Query("""
+        SELECT conversation_id
+        FROM messages
+        GROUP BY conversation_id
+        ORDER BY MAX(timestamp) DESC
+    """)
+    suspend fun getConversationIds(): List<String>
+
+    @Query("""
+        UPDATE messages
+        SET content = :content
+        WHERE id = :messageId
+        AND conversation_id = :conversationId
+    """)
+    suspend fun updateMessage(
+        messageId: Long,
+        conversationId: String,
+        content: String
+    ): Int
+
+    @Query("""
+        DELETE FROM messages
+        WHERE id = :messageId
+        AND conversation_id = :conversationId
+    """)
+    suspend fun deleteMessage(
+        messageId: Long,
+        conversationId: String
+    ): Int
 }
 
 @Dao
 interface MemoryFactDao {
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(fact: MemoryFactEntity): Long
 
@@ -64,8 +100,13 @@ interface MemoryFactDao {
     @Query("SELECT * FROM memory_facts ORDER BY updated_at DESC")
     suspend fun getAll(): List<MemoryFactEntity>
 
-    @Query("SELECT * FROM memory_facts WHERE `key` LIKE '%' || :query || '%' OR `value` LIKE '%' || :query || '%'")
+    @Query("""
+        SELECT * FROM memory_facts
+        WHERE `key` LIKE '%' || :query || '%'
+        OR `value` LIKE '%' || :query || '%'
+    """)
     suspend fun search(query: String): List<MemoryFactEntity>
 
     @Query("DELETE FROM memory_facts WHERE id = :id")
-    suspend fun delete(id: Long
+    suspend fun delete(id: Long)
+}
