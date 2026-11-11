@@ -1,4 +1,4 @@
-ckage com.cellclaw.memory
+package com.cellclaw.memory
 
 import androidx.room.*
 import com.cellclaw.scheduler.ScheduledTaskDao
