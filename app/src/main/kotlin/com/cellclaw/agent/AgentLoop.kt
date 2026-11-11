@@ -110,7 +110,40 @@ class AgentLoop @Inject constructor(
             currentJob = scope.launch { runAgentLoop() }
         }
     }
+suspend fun createConversation(): String {
+    currentJob?.cancelAndJoin()
+    isHeartbeatRun = false
 
+    val id = conversationStore.newConversation()
+    conversationHistory.clear()
+    _state.value = AgentState.IDLE
+
+    return id
+}
+
+suspend fun switchConversation(id: String) {
+    currentJob?.cancelAndJoin()
+    isHeartbeatRun = false
+
+    conversationStore.switchConversation(id)
+    conversationHistory.clear()
+
+    val stored = conversationStore.getRecentMessages(50)
+
+    for (msg in stored) {
+        val role = if (msg.role == "user") {
+            Role.USER
+        } else {
+            Role.ASSISTANT
+        }
+
+        conversationHistory.add(
+            Message(role, listOf(ContentBlock.Text(msg.content)))
+        )
+    }
+
+    _state.value = AgentState.IDLE
+}
     private suspend fun runAgentLoop() {
         var iterations = 0
         val maxIterations = appConfig.maxIterations
