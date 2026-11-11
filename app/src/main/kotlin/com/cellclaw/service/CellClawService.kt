@@ -42,11 +42,26 @@ class CellClawService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_START -> {
-                startForeground(NOTIFICATION_ID, buildNotification("CellClaw is running", AgentState.IDLE, false, HeartbeatState.STOPPED, null))
-                agentLoop.loadHistory()
+                startForeground(
+                    NOTIFICATION_ID,
+                    buildNotification(
+                        "CellClaw is running",
+                        AgentState.IDLE,
+                        false,
+                        HeartbeatState.STOPPED,
+                        null
+                    )
+                )
+
                 observeState()
+
+                serviceScope?.launch {
+                    agentLoop.loadHistory()
+                }
+
                 heartbeatManager.start(wakeLock)
             }
+
             ACTION_STOP -> {
                 heartbeatManager.stop()
                 agentLoop.stop()
@@ -55,13 +70,16 @@ class CellClawService : Service() {
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
             }
+
             ACTION_PAUSE -> {
                 agentLoop.pause()
             }
+
             ACTION_RESUME -> {
                 agentLoop.resume()
             }
         }
+
         return START_STICKY
     }
 
@@ -75,7 +93,11 @@ class CellClawService : Service() {
 
     private fun observeState() {
         serviceScope?.cancel()
-        serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+
+        serviceScope = CoroutineScope(
+            SupervisorJob() + Dispatchers.Main.immediate
+        )
+
         serviceScope?.launch {
             combine(
                 agentLoop.state,
@@ -83,9 +105,16 @@ class CellClawService : Service() {
                 heartbeatManager.state,
                 heartbeatManager.activeTaskContext
             ) { agentState, requests, heartbeatState, taskContext ->
-                StateSnapshot(agentState, requests, heartbeatState, taskContext)
+                StateSnapshot(
+                    agentState,
+                    requests,
+                    heartbeatState,
+                    taskContext
+                )
             }.collect { snapshot ->
+
                 val hasPending = snapshot.requests.isNotEmpty()
+
                 val text = when (snapshot.agentState) {
                     AgentState.IDLE -> {
                         when (snapshot.heartbeatState) {
@@ -97,14 +126,26 @@ class CellClawService : Service() {
                             HeartbeatState.STOPPED -> "Idle"
                         }
                     }
+
                     AgentState.THINKING -> "Thinking..."
                     AgentState.EXECUTING_TOOLS -> "Executing tools..."
-                    AgentState.WAITING_APPROVAL -> "Waiting for approval (${snapshot.requests.size} pending)"
+                    AgentState.WAITING_APPROVAL ->
+                        "Waiting for approval (${snapshot.requests.size} pending)"
                     AgentState.PAUSED -> "Paused"
                     AgentState.ERROR -> "Error occurred"
                 }
-                val notification = buildNotification(text, snapshot.agentState, hasPending, snapshot.heartbeatState, snapshot.taskContext)
-                val manager = getSystemService(NOTIFICATION_SERVICE) as android.app.NotificationManager
+
+                val notification = buildNotification(
+                    text,
+                    snapshot.agentState,
+                    hasPending,
+                    snapshot.heartbeatState,
+                    snapshot.taskContext
+                )
+
+                val manager =
+                    getSystemService(NOTIFICATION_SERVICE) as android.app.NotificationManager
+
                 manager.notify(NOTIFICATION_ID, notification)
             }
         }
@@ -117,60 +158,88 @@ class CellClawService : Service() {
         val taskContext: String?
     )
 
-    private fun buildNotification(text: String, state: AgentState, hasPendingApprovals: Boolean, heartbeatState: HeartbeatState, taskContext: String?): Notification {
+    private fun buildNotification(
+        text: String,
+        state: AgentState,
+        hasPendingApprovals: Boolean,
+        heartbeatState: HeartbeatState,
+        taskContext: String?
+    ): Notification {
+
         val openIntent = PendingIntent.getActivity(
-            this, 0,
+            this,
+            0,
             Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 
         val stopIntent = PendingIntent.getService(
-            this, 1,
-            Intent(this, CellClawService::class.java).apply { action = ACTION_STOP },
+            this,
+            1,
+            Intent(this, CellClawService::class.java).apply {
+                action = ACTION_STOP
+            },
             PendingIntent.FLAG_IMMUTABLE
         )
 
-        // Pause/Resume toggle
         val isPaused = state == AgentState.PAUSED
+
         val toggleAction = if (isPaused) {
             PendingIntent.getService(
-                this, 2,
-                Intent(this, CellClawService::class.java).apply { action = ACTION_RESUME },
+                this,
+                2,
+                Intent(this, CellClawService::class.java).apply {
+                    action = ACTION_RESUME
+                },
                 PendingIntent.FLAG_IMMUTABLE
             )
         } else {
             PendingIntent.getService(
-                this, 2,
-                Intent(this, CellClawService::class.java).apply { action = ACTION_PAUSE },
+                this,
+                2,
+                Intent(this, CellClawService::class.java).apply {
+                    action = ACTION_PAUSE
+                },
                 PendingIntent.FLAG_IMMUTABLE
             )
         }
 
-        // Reply action via RemoteInput (shows as text field, not a button)
         val replyIntent = PendingIntent.getBroadcast(
-            this, 3,
+            this,
+            3,
             Intent(this, NotificationActionReceiver::class.java).apply {
                 action = NotificationActionReceiver.ACTION_REPLY
             },
             PendingIntent.FLAG_MUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
-        val remoteInput = RemoteInput.Builder(NotificationActionReceiver.KEY_REPLY)
+
+        val remoteInput = RemoteInput.Builder(
+            NotificationActionReceiver.KEY_REPLY
+        )
             .setLabel("Ask CellClaw...")
             .build()
-        val replyAction = NotificationCompat.Action.Builder(0, "Reply", replyIntent)
+
+        val replyAction = NotificationCompat.Action.Builder(
+            0,
+            "Reply",
+            replyIntent
+        )
             .addRemoteInput(remoteInput)
             .build()
 
-        // Explain Screen action
         val explainIntent = PendingIntent.getBroadcast(
-            this, 4,
+            this,
+            4,
             Intent(this, NotificationActionReceiver::class.java).apply {
                 action = NotificationActionReceiver.ACTION_SCREENSHOT_EXPLAIN
             },
             PendingIntent.FLAG_IMMUTABLE
         )
 
-        val builder = NotificationCompat.Builder(this, CellClawApp.CHANNEL_SERVICE)
+        val builder = NotificationCompat.Builder(
+            this,
+            CellClawApp.CHANNEL_SERVICE
+        )
             .setContentTitle("CellClaw")
             .setContentText(text)
             .setSmallIcon(R.drawable.ic_notification)
@@ -178,30 +247,45 @@ class CellClawService : Service() {
             .setOngoing(true)
             .setSilent(true)
 
-        // Android shows max 3 action buttons — prioritize by state
         if (hasPendingApprovals) {
+
             val approveIntent = PendingIntent.getBroadcast(
-                this, 5,
+                this,
+                5,
                 Intent(this, NotificationActionReceiver::class.java).apply {
                     action = NotificationActionReceiver.ACTION_APPROVE_ALL
                 },
                 PendingIntent.FLAG_IMMUTABLE
             )
+
             val denyIntent = PendingIntent.getBroadcast(
-                this, 6,
+                this,
+                6,
                 Intent(this, NotificationActionReceiver::class.java).apply {
                     action = NotificationActionReceiver.ACTION_DENY_ALL
                 },
                 PendingIntent.FLAG_IMMUTABLE
             )
+
             builder.addAction(0, "Approve All", approveIntent)
             builder.addAction(0, "Deny All", denyIntent)
-            builder.addAction(0, if (isPaused) "Resume" else "Pause", toggleAction)
+            builder.addAction(
+                0,
+                if (isPaused) "Resume" else "Pause",
+                toggleAction
+            )
+
         } else {
+
             builder.addAction(0, "Stop", stopIntent)
-            builder.addAction(0, if (isPaused) "Resume" else "Pause", toggleAction)
+            builder.addAction(
+                0,
+                if (isPaused) "Resume" else "Pause",
+                toggleAction
+            )
             builder.addAction(0, "Explain Screen", explainIntent)
         }
+
         builder.addAction(replyAction)
 
         return builder.build()
@@ -209,11 +293,12 @@ class CellClawService : Service() {
 
     private fun acquireWakeLock() {
         val powerManager = getSystemService(POWER_SERVICE) as PowerManager
+
         wakeLock = powerManager.newWakeLock(
             PowerManager.PARTIAL_WAKE_LOCK,
             "CellClaw::AgentWakeLock"
         ).apply {
-            acquire(HeartbeatManager.WAKE_LOCK_DURATION_MS) // 5 min, renewable by heartbeat
+            acquire(HeartbeatManager.WAKE_LOCK_DURATION_MS)
         }
     }
 
