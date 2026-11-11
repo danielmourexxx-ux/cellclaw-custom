@@ -1,3 +1,4 @@
+
 package com.cellclaw.ui.screens
 
 import android.Manifest
@@ -30,6 +31,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -48,22 +51,30 @@ fun ChatScreen(
     viewModel: ChatViewModel = hiltViewModel()
 ) {
     val messages by viewModel.messages.collectAsState()
+    val conversationIds by viewModel.conversationIds.collectAsState()
+    val currentConversationId by viewModel.currentConversationId.collectAsState()
     val agentState by viewModel.agentState.collectAsState()
     val pendingApprovals by viewModel.pendingApprovals.collectAsState()
 
-    // Auto-send initial message from intent (e.g. adb)
     LaunchedEffect(initialMessage) {
         if (!initialMessage.isNullOrBlank()) {
             viewModel.sendMessage(initialMessage)
         }
     }
+
     var inputText by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
+    val clipboardManager = LocalClipboardManager.current
 
-    // Poll accessibility service status via system API (works cross-process)
+    var showHistory by remember { mutableStateOf(false) }
+    var editingMessage by remember { mutableStateOf<ChatMessage?>(null) }
+    var editText by remember { mutableStateOf("") }
+    var deletingMessage by remember { mutableStateOf<ChatMessage?>(null) }
+
     var accessibilityConnected by remember { mutableStateOf(false) }
+
     LaunchedEffect(Unit) {
         val am = context.getSystemService(AccessibilityManager::class.java)
         while (true) {
@@ -82,6 +93,17 @@ fun ChatScreen(
             TopAppBar(
                 title = { Text("CellClaw") },
                 actions = {
+                    IconButton(
+                        onClick = { viewModel.createConversation() },
+                        enabled = agentState == "idle"
+                    ) {
+                        Icon(Icons.Default.Add, contentDescription = "Nova conversa")
+                    }
+
+                    IconButton(onClick = { showHistory = true }) {
+                        Icon(Icons.Default.History, contentDescription = "Histórico")
+                    }
+
                     if (pendingApprovals.isNotEmpty()) {
                         BadgedBox(badge = {
                             Badge { Text("${pendingApprovals.size}") }
@@ -91,9 +113,11 @@ fun ChatScreen(
                             }
                         }
                     }
+
                     IconButton(onClick = onNavigateToSkills) {
                         Icon(Icons.Default.Star, "Skills")
                     }
+
                     IconButton(onClick = onNavigateToSettings) {
                         Icon(Icons.Default.Settings, "Settings")
                     }
@@ -106,19 +130,30 @@ fun ChatScreen(
                 .fillMaxSize()
                 .padding(padding)
         ) {
-            // Notification listener warning
             val notifListenerEnabled = remember(accessibilityConnected) {
-                val flat = Settings.Secure.getString(context.contentResolver, "enabled_notification_listeners") ?: ""
-                val component = ComponentName(context, "com.cellclaw.service.CellClawNotificationListener").flattenToString()
+                val flat = Settings.Secure.getString(
+                    context.contentResolver,
+                    "enabled_notification_listeners"
+                ) ?: ""
+
+                val component = ComponentName(
+                    context,
+                    "com.cellclaw.service.CellClawNotificationListener"
+                ).flattenToString()
+
                 flat.contains(component)
             }
+
             if (!notifListenerEnabled) {
                 Surface(
                     color = MaterialTheme.colorScheme.tertiaryContainer,
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Row(
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                        modifier = Modifier.padding(
+                            horizontal = 16.dp,
+                            vertical = 8.dp
+                        ),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Icon(
@@ -127,13 +162,16 @@ fun ChatScreen(
                             tint = MaterialTheme.colorScheme.onTertiaryContainer,
                             modifier = Modifier.size(20.dp)
                         )
+
                         Spacer(Modifier.width(8.dp))
+
                         Text(
                             text = "Notification listener disabled",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onTertiaryContainer,
                             modifier = Modifier.weight(1f)
                         )
+
                         TextButton(onClick = {
                             context.startActivity(
                                 Intent("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS")
@@ -146,21 +184,27 @@ fun ChatScreen(
                 }
             }
 
-            // Overlay permission warning
-            var overlayGranted by remember { mutableStateOf(Settings.canDrawOverlays(context)) }
+            var overlayGranted by remember {
+                mutableStateOf(Settings.canDrawOverlays(context))
+            }
+
             LaunchedEffect(Unit) {
                 while (true) {
                     delay(2_000)
                     overlayGranted = Settings.canDrawOverlays(context)
                 }
             }
+
             if (!overlayGranted) {
                 Surface(
                     color = MaterialTheme.colorScheme.errorContainer,
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Row(
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                        modifier = Modifier.padding(
+                            horizontal = 16.dp,
+                            vertical = 8.dp
+                        ),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Icon(
@@ -169,13 +213,16 @@ fun ChatScreen(
                             tint = MaterialTheme.colorScheme.onErrorContainer,
                             modifier = Modifier.size(20.dp)
                         )
+
                         Spacer(Modifier.width(8.dp))
+
                         Text(
                             text = "Overlay permission required",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onErrorContainer,
                             modifier = Modifier.weight(1f)
                         )
+
                         TextButton(onClick = {
                             context.startActivity(
                                 Intent(
@@ -190,14 +237,16 @@ fun ChatScreen(
                 }
             }
 
-            // Accessibility service warning
             if (!accessibilityConnected) {
                 Surface(
                     color = MaterialTheme.colorScheme.errorContainer,
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Row(
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                        modifier = Modifier.padding(
+                            horizontal = 16.dp,
+                            vertical = 8.dp
+                        ),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Icon(
@@ -206,27 +255,42 @@ fun ChatScreen(
                             tint = MaterialTheme.colorScheme.onErrorContainer,
                             modifier = Modifier.size(20.dp)
                         )
+
                         Spacer(Modifier.width(8.dp))
+
                         Text(
                             text = "Accessibility service disabled",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onErrorContainer,
                             modifier = Modifier.weight(1f)
                         )
+
                         TextButton(onClick = {
-                            val cn = ComponentName(context, "com.cellclaw.service.CellClawAccessibility")
+                            val cn = ComponentName(
+                                context,
+                                "com.cellclaw.service.CellClawAccessibility"
+                            )
+
                             var opened = false
+
                             if (android.os.Build.VERSION.SDK_INT >= 36) {
                                 try {
                                     context.startActivity(
-                                        Intent("android.settings.ACCESSIBILITY_DETAIL_SETTINGS").apply {
-                                            putExtra(Intent.EXTRA_COMPONENT_NAME, cn.flattenToString())
+                                        Intent(
+                                            "android.settings.ACCESSIBILITY_DETAIL_SETTINGS"
+                                        ).apply {
+                                            putExtra(
+                                                Intent.EXTRA_COMPONENT_NAME,
+                                                cn.flattenToString()
+                                            )
                                             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                                         }
                                     )
                                     opened = true
-                                } catch (_: Exception) { }
+                                } catch (_: Exception) {
+                                }
                             }
+
                             if (!opened) {
                                 context.startActivity(
                                     Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
@@ -240,7 +304,6 @@ fun ChatScreen(
                 }
             }
 
-            // Messages list
             LazyColumn(
                 state = listState,
                 modifier = Modifier
@@ -251,18 +314,30 @@ fun ChatScreen(
                 contentPadding = PaddingValues(vertical = 8.dp)
             ) {
                 items(messages, key = { it.id }) { message ->
-                    ChatBubble(message = message)
+                    ChatBubble(
+                        message = message,
+                        onCopy = {
+                            clipboardManager.setText(
+                                AnnotatedString(message.content)
+                            )
+                        },
+                        onEdit = {
+                            editingMessage = message
+                            editText = message.content
+                        },
+                        onDelete = {
+                            deletingMessage = message
+                        }
+                    )
                 }
             }
 
-            // Auto-scroll on new messages
             LaunchedEffect(messages.size) {
                 if (messages.isNotEmpty()) {
                     listState.animateScrollToItem(messages.size - 1)
                 }
             }
 
-            // Thinking overlay
             val thinkingText by viewModel.thinkingText.collectAsState()
             val isAgentRunning = agentState != "idle"
             var thinkingExpanded by remember { mutableStateOf(false) }
@@ -294,7 +369,9 @@ fun ChatScreen(
                                     tint = MaterialTheme.colorScheme.error
                                 )
                             }
+
                             Spacer(Modifier.width(8.dp))
+
                             Text(
                                 text = when (agentState) {
                                     "thinking" -> "Thinking..."
@@ -309,6 +386,7 @@ fun ChatScreen(
                                 else MaterialTheme.colorScheme.primary,
                                 modifier = Modifier.weight(1f)
                             )
+
                             IconButton(
                                 onClick = { viewModel.stopAgent() },
                                 modifier = Modifier.size(32.dp)
@@ -322,10 +400,14 @@ fun ChatScreen(
                             }
                         }
 
-                        // Inline approval card
-                        if (agentState == "waiting_approval" && pendingApprovals.isNotEmpty()) {
+                        if (
+                            agentState == "waiting_approval" &&
+                            pendingApprovals.isNotEmpty()
+                        ) {
                             val request = pendingApprovals.first()
+
                             Spacer(Modifier.height(6.dp))
+
                             Surface(
                                 color = MaterialTheme.colorScheme.errorContainer,
                                 shape = RoundedCornerShape(8.dp),
@@ -337,46 +419,89 @@ fun ChatScreen(
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onErrorContainer
                                     )
+
                                     Text(
                                         text = request.parameters.toString().take(120),
                                         style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.7f),
+                                        color = MaterialTheme.colorScheme.onErrorContainer.copy(
+                                            alpha = 0.7f
+                                        ),
                                         maxLines = 2,
                                         overflow = TextOverflow.Ellipsis
                                     )
+
                                     Spacer(Modifier.height(8.dp))
+
                                     Row(
                                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                                         modifier = Modifier.fillMaxWidth()
                                     ) {
                                         OutlinedButton(
-                                            onClick = { viewModel.respondToApproval(request.id, ApprovalResult.DENIED) },
+                                            onClick = {
+                                                viewModel.respondToApproval(
+                                                    request.id,
+                                                    ApprovalResult.DENIED
+                                                )
+                                            },
                                             modifier = Modifier.weight(1f),
-                                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                                            contentPadding = PaddingValues(
+                                                horizontal = 8.dp,
+                                                vertical = 4.dp
+                                            )
                                         ) {
-                                            Text("Deny", style = MaterialTheme.typography.labelSmall)
+                                            Text(
+                                                "Deny",
+                                                style = MaterialTheme.typography.labelSmall
+                                            )
                                         }
+
                                         Button(
-                                            onClick = { viewModel.respondToApproval(request.id, ApprovalResult.APPROVED) },
+                                            onClick = {
+                                                viewModel.respondToApproval(
+                                                    request.id,
+                                                    ApprovalResult.APPROVED
+                                                )
+                                            },
                                             modifier = Modifier.weight(1f),
-                                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                                            contentPadding = PaddingValues(
+                                                horizontal = 8.dp,
+                                                vertical = 4.dp
+                                            )
                                         ) {
-                                            Text("Approve", style = MaterialTheme.typography.labelSmall)
+                                            Text(
+                                                "Approve",
+                                                style = MaterialTheme.typography.labelSmall
+                                            )
                                         }
+
                                         TextButton(
-                                            onClick = { viewModel.respondToApproval(request.id, ApprovalResult.ALWAYS_ALLOW) },
-                                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                                            onClick = {
+                                                viewModel.respondToApproval(
+                                                    request.id,
+                                                    ApprovalResult.ALWAYS_ALLOW
+                                                )
+                                            },
+                                            contentPadding = PaddingValues(
+                                                horizontal = 8.dp,
+                                                vertical = 4.dp
+                                            )
                                         ) {
-                                            Text("Always", style = MaterialTheme.typography.labelSmall)
+                                            Text(
+                                                "Always",
+                                                style = MaterialTheme.typography.labelSmall
+                                            )
                                         }
                                     }
                                 }
                             }
                         }
 
-                        // Thinking text preview
-                        if (thinkingText != null && agentState != "waiting_approval") {
+                        if (
+                            thinkingText != null &&
+                            agentState != "waiting_approval"
+                        ) {
                             Spacer(Modifier.height(6.dp))
+
                             Text(
                                 text = thinkingText ?: "",
                                 style = MaterialTheme.typography.bodySmall,
@@ -386,8 +511,12 @@ fun ChatScreen(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .clip(RoundedCornerShape(8.dp))
-                                    .background(MaterialTheme.colorScheme.surfaceContainerLow)
-                                    .clickable { thinkingExpanded = !thinkingExpanded }
+                                    .background(
+                                        MaterialTheme.colorScheme.surfaceContainerLow
+                                    )
+                                    .clickable {
+                                        thinkingExpanded = !thinkingExpanded
+                                    }
                                     .padding(8.dp)
                                     .then(
                                         if (thinkingExpanded) Modifier
@@ -401,7 +530,6 @@ fun ChatScreen(
                 }
             }
 
-            // Input bar
             val isListening by viewModel.isListening.collectAsState()
             val voiceEnabled = viewModel.voiceEnabled
 
@@ -424,35 +552,48 @@ fun ChatScreen(
                     onValueChange = { inputText = it },
                     modifier = Modifier.weight(1f),
                     placeholder = {
-                        Text(if (isAgentRunning) "Send instructions..." else "Message CellClaw...")
+                        Text(
+                            if (isAgentRunning) "Send instructions..."
+                            else "Message CellClaw..."
+                        )
                     },
                     shape = RoundedCornerShape(24.dp),
                     maxLines = 4
                 )
+
                 Spacer(modifier = Modifier.width(8.dp))
+
                 if (voiceEnabled) {
                     IconButton(
                         onClick = {
                             if (isListening) {
                                 viewModel.stopVoiceInput()
                             } else {
-                                micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                                micPermissionLauncher.launch(
+                                    Manifest.permission.RECORD_AUDIO
+                                )
                             }
                         }
                     ) {
                         Icon(
-                            if (isListening) Icons.Default.MicOff else Icons.Default.Mic,
-                            contentDescription = if (isListening) "Stop listening" else "Start voice input",
-                            tint = if (isListening) MaterialTheme.colorScheme.error
-                                   else MaterialTheme.colorScheme.primary
+                            if (isListening) Icons.Default.MicOff
+                            else Icons.Default.Mic,
+                            contentDescription = if (isListening)
+                                "Stop listening"
+                            else "Start voice input",
+                            tint = if (isListening)
+                                MaterialTheme.colorScheme.error
+                            else MaterialTheme.colorScheme.primary
                         )
                     }
                 }
+
                 FilledIconButton(
                     onClick = {
                         if (inputText.isNotBlank()) {
                             viewModel.sendMessage(inputText.trim())
                             inputText = ""
+
                             scope.launch {
                                 if (messages.isNotEmpty()) {
                                     listState.animateScrollToItem(messages.size - 1)
@@ -467,17 +608,123 @@ fun ChatScreen(
             }
         }
     }
+
+    if (showHistory) {
+        AlertDialog(
+            onDismissRequest = { showHistory = false },
+            title = { Text("Histórico de conversas") },
+            text = {
+                if (conversationIds.isEmpty()) {
+                    Text("Nenhuma conversa salva ainda.")
+                } else {
+                    Column(
+                        Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 360.dp)
+                            .verticalScroll(rememberScrollState())
+                    ) {
+                        conversationIds.forEach { id ->
+                            TextButton(
+                                onClick = {
+                                    viewModel.switchConversation(id)
+                                    showHistory = false
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(
+                                    if (id == currentConversationId)
+                                        id.take(8) + " (atual)"
+                                    else id.take(8)
+                                )
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showHistory = false }) {
+                    Text("Fechar")
+                }
+            }
+        )
+    }
+
+    editingMessage?.let { message ->
+        AlertDialog(
+            onDismissRequest = { editingMessage = null },
+            title = { Text("Editar mensagem") },
+            text = {
+                OutlinedTextField(
+                    value = editText,
+                    onValueChange = { editText = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    minLines = 3,
+                    maxLines = 8
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        viewModel.editMessage(message.id, editText.trim())
+                        editingMessage = null
+                    },
+                    enabled = editText.isNotBlank() &&
+                        editText.trim() != message.content
+                ) {
+                    Text("Salvar")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { editingMessage = null }) {
+                    Text("Cancelar")
+                }
+            }
+        )
+    }
+
+    deletingMessage?.let { message ->
+        AlertDialog(
+            onDismissRequest = { deletingMessage = null },
+            title = { Text("Excluir mensagem?") },
+            text = { Text("Esta ação não pode ser desfeita.") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        viewModel.deleteMessage(message.id)
+                        deletingMessage = null
+                    }
+                ) {
+                    Text("Excluir")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { deletingMessage = null }) {
+                    Text("Cancelar")
+                }
+            }
+        )
+    }
 }
 
 @Composable
-fun ChatBubble(message: ChatMessage) {
+fun ChatBubble(
+    message: ChatMessage,
+    onCopy: () -> Unit,
+    onEdit: () -> Unit,
+    onDelete: () -> Unit
+) {
     val isUser = message.role == "user"
-    val alignment = if (isUser) Alignment.CenterEnd else Alignment.CenterStart
+
+    val alignment = if (isUser)
+        Alignment.CenterEnd
+    else Alignment.CenterStart
+
     val bgColor = if (isUser) {
         MaterialTheme.colorScheme.primary
     } else {
         MaterialTheme.colorScheme.surfaceVariant
     }
+
     val textColor = if (isUser) {
         MaterialTheme.colorScheme.onPrimary
     } else {
@@ -495,6 +742,71 @@ fun ChatBubble(message: ChatMessage) {
                 .background(bgColor)
                 .padding(12.dp)
         ) {
+            var menuExpanded by remember(message.id) {
+                mutableStateOf(false)
+            }
+
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End
+            ) {
+                Box {
+                    IconButton(
+                        onClick = { menuExpanded = true },
+                        modifier = Modifier.size(28.dp)
+                    ) {
+                        Icon(
+                            Icons.Default.MoreVert,
+                            contentDescription = "Ações da mensagem",
+                            tint = textColor
+                        )
+                    }
+
+                    DropdownMenu(
+                        expanded = menuExpanded,
+                        onDismissRequest = { menuExpanded = false }
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("Copiar") },
+                            leadingIcon = {
+                                Icon(Icons.Default.ContentCopy, null)
+                            },
+                            onClick = {
+                                menuExpanded = false
+                                onCopy()
+                            }
+                        )
+
+                        if (
+                            message.id > 0L &&
+                            (message.role == "user" || message.role == "assistant")
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("Editar") },
+                                leadingIcon = {
+                                    Icon(Icons.Default.Edit, null)
+                                },
+                                onClick = {
+                                    menuExpanded = false
+                                    onEdit()
+                                }
+                            )
+
+                            DropdownMenuItem(
+                                text = { Text("Excluir") },
+                                leadingIcon = {
+                                    Icon(Icons.Default.Delete, null)
+                                },
+                                onClick = {
+                                    menuExpanded = false
+                                    onDelete()
+                                }
+                            )
+                        }
+                    }
+                }
+            }
+
             if (message.toolName != null) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(
@@ -503,15 +815,19 @@ fun ChatBubble(message: ChatMessage) {
                         modifier = Modifier.size(14.dp),
                         tint = textColor.copy(alpha = 0.7f)
                     )
+
                     Spacer(Modifier.width(4.dp))
+
                     Text(
                         text = message.toolName,
                         style = MaterialTheme.typography.labelSmall,
                         color = textColor.copy(alpha = 0.7f)
                     )
                 }
+
                 Spacer(Modifier.height(4.dp))
             }
+
             Text(
                 text = message.content,
                 color = textColor,
