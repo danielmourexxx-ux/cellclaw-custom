@@ -1,3 +1,4 @@
+
 package com.cellclaw.ui.viewmodel
 
 import androidx.lifecycle.ViewModel
@@ -11,6 +12,7 @@ import com.cellclaw.approval.ApprovalRequest
 import com.cellclaw.approval.ApprovalResult
 import com.cellclaw.config.AppConfig
 import com.cellclaw.config.SecureKeyStore
+import com.cellclaw.memory.ConversationStore
 import com.cellclaw.provider.AnthropicProvider
 import com.cellclaw.ui.screens.ChatMessage
 import com.cellclaw.voice.VoiceManager
@@ -28,11 +30,19 @@ class ChatViewModel @Inject constructor(
     private val appConfig: AppConfig,
     private val secureKeyStore: SecureKeyStore,
     private val anthropicProvider: AnthropicProvider,
-    private val voiceManager: VoiceManager
+    private val voiceManager: VoiceManager,
+    private val conversationStore: ConversationStore
 ) : ViewModel() {
 
     private val _messages = MutableStateFlow<List<ChatMessage>>(emptyList())
     val messages: StateFlow<List<ChatMessage>> = _messages.asStateFlow()
+
+    private val _conversationIds = MutableStateFlow<List<String>>(emptyList())
+    val conversationIds: StateFlow<List<String>> = _conversationIds.asStateFlow()
+
+    private val _currentConversationId = MutableStateFlow("default")
+    val currentConversationId: StateFlow<String> =
+        _currentConversationId.asStateFlow()
 
     private val _agentState = MutableStateFlow("idle")
     val agentState: StateFlow<String> = _agentState.asStateFlow()
@@ -40,7 +50,8 @@ class ChatViewModel @Inject constructor(
     private val _thinkingText = MutableStateFlow<String?>(null)
     val thinkingText: StateFlow<String?> = _thinkingText.asStateFlow()
 
-    val pendingApprovals: StateFlow<List<ApprovalRequest>> = approvalQueue.requests
+    val pendingApprovals: StateFlow<List<ApprovalRequest>> =
+        approvalQueue.requests
 
     private var messageCounter = 0L
 
@@ -52,6 +63,14 @@ class ChatViewModel @Inject constructor(
         observeAgentEvents()
         observeAgentState()
         observeVoiceInput()
+
+        agentLoop.loadHistory()
+
+        viewModelScope.launch {
+            refreshMessages()
+            refreshConversations()
+        }
+
         if (appConfig.voiceEnabled) {
             voiceManager.initialize()
         }
@@ -66,27 +85,49 @@ class ChatViewModel @Inject constructor(
         viewModelScope.launch {
             agentLoop.events.collect { event ->
                 when (event) {
-                    is AgentEvent.UserMessage -> addMessage("user", event.text)
-                    is AgentEvent.AssistantText -> addMessage("assistant", event.text)
-                    is AgentEvent.ToolCallStart -> addMessage(
-                        "tool", "Calling ${event.name}...",
-                        toolName = event.name
-                    )
-                    is AgentEvent.ToolCallResult -> addMessage(
-                        "tool",
-                        if (event.result.success) "Done" else "Error: ${event.result.error}",
-                        toolName = event.name
-                    )
-                    is AgentEvent.ToolCallDenied -> addMessage(
-                        "tool", "Denied by user",
-                        toolName = event.name
-                    )
-                    is AgentEvent.ThinkingText -> _thinkingText.value = event.text
-                    is AgentEvent.Error -> addMessage("error", event.message)
-                    is AgentEvent.HeartbeatStart -> {} // Silent — don't show in chat
+                    is AgentEvent.UserMessage ->
+                        addMessage("user", event.text)
+
+                    is AgentEvent.AssistantText ->
+                        addMessage("assistant", event.text)
+
+                    is AgentEvent.ToolCallStart ->
+                        addMessage(
+                            "tool",
+                            "Calling ${event.name}...",
+                            toolName = event.name
+                        )
+
+                    is AgentEvent.ToolCallResult ->
+                        addMessage(
+                            "tool",
+                            if (event.result.success) "Done"
+                            else "Error: ${event.result.error}",
+                            toolName = event.name
+                        )
+
+                    is AgentEvent.ToolCallDenied ->
+                        addMessage(
+                            "tool",
+                            "Denied by user",
+                            toolName = event.name
+                        )
+
+                    is AgentEvent.ThinkingText ->
+                        _thinkingText.value = event.text
+
+                    is AgentEvent.Error ->
+                        addMessage("error", event.message)
+
+                    is AgentEvent.HeartbeatStart -> {}
+
                     is AgentEvent.HeartbeatComplete -> {
                         val note = event.detection.statusNote
-                        if (note != null && event.detection.heartbeatResult != HeartbeatResult.OK_NOTHING_TO_DO) {
+                        if (
+                            note != null &&
+                            event.detection.heartbeatResult !=
+                            HeartbeatResult.OK_NOTHING_TO_DO
+                        ) {
                             addMessage("assistant", note)
                         }
                     }
@@ -106,14 +147,80 @@ class ChatViewModel @Inject constructor(
                     AgentState.PAUSED -> "paused"
                     AgentState.ERROR -> "error"
                 }
+
                 if (state == AgentState.IDLE || state == AgentState.ERROR) {
                     _thinkingText.value = null
+
+                    refreshMessages()
+                    refreshConversations()
                 }
             }
         }
     }
 
+    private suspend fun refreshMessages() {
+        val stored = conversationStore.getAllMessages()
+
+        _messages.value = stored.map { message ->
+            ChatMessage(
+                id = message.id,
+                role = message.role,
+                content = message.content,
+                timestamp = message.timestamp
+            )
+        }
+    }
+
+    private suspend fun refreshConversations() {
+        _conversationIds.value = conversationStore.getConversationIds()
+    }
+
+    fun createConversation() {
+        viewModelScope.launch {
+            val id = agentLoop.createConversation()
+            _currentConversationId.value = id
+            _messages.value = emptyList()
+            refreshConversations()
+        }
+    }
+
+    fun switchConversation(id: String) {
+        viewModelScope.launch {
+            agentLoop.switchConversation(id)
+            _currentConversationId.value = id
+            refreshMessages()
+        }
+    }
+
+    fun editMessage(messageId: Long, newContent: String) {
+        if (newContent.isBlank()) return
+
+        viewModelScope.launch {
+            val updated = conversationStore.editMessage(
+                messageId,
+                newContent
+            )
+
+            if (updated) {
+                refreshMessages()
+                agentLoop.loadHistory()
+            }
+        }
+    }
+
+    fun deleteMessage(messageId: Long) {
+        viewModelScope.launch {
+            val deleted = conversationStore.deleteMessage(messageId)
+
+            if (deleted) {
+                refreshMessages()
+                agentLoop.loadHistory()
+            }
+        }
+    }
+
     fun sendMessage(text: String) {
+        if (text.isBlank()) return
         agentLoop.submitMessage(text)
     }
 
@@ -122,7 +229,10 @@ class ChatViewModel @Inject constructor(
         _thinkingText.value = null
     }
 
-    fun respondToApproval(requestId: String, result: ApprovalResult) {
+    fun respondToApproval(
+        requestId: String,
+        result: ApprovalResult
+    ) {
         approvalQueue.respond(requestId, result)
     }
 
@@ -145,15 +255,20 @@ class ChatViewModel @Inject constructor(
         voiceManager.stopListening()
     }
 
-    private fun addMessage(role: String, content: String, toolName: String? = null) {
-        messageCounter++
+    private fun addMessage(
+        role: String,
+        content: String,
+        toolName: String? = null
+    ) {
+        messageCounter--
+
         _messages.value = _messages.value + ChatMessage(
             id = messageCounter,
             role = role,
             content = content,
             toolName = toolName
         )
-        // Auto-speak assistant responses if enabled
+
         if (role == "assistant" && appConfig.autoSpeakResponses) {
             voiceManager.speak(content)
         }
